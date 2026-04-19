@@ -1,0 +1,5 @@
+[gd_scene format=3 uid="uid://btestminimalmain"]
+
+[node name="MainRoot" type="Node2D"]
+
+[node name="SubNode" type="Node" parent="."]

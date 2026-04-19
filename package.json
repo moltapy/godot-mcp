@@ -28,6 +28,7 @@
   ],
   "scripts": {
     "build": "tsc && node scripts/build.js",
+    "test:headless": "node scripts/test-headless.mjs",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepare": "npm run build",
     "watch": "tsc --watch"

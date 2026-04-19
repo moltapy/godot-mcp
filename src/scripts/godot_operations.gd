@@ -1208,7 +1208,13 @@ func _resolve_scene_node(scene_root: Node, node_path_param: String) -> Node:
         p = p.substr(5)
     if p.is_empty() or p == "root":
         return scene_root
-    return scene_root.get_node_or_null(NodePath(p))
+    var n := scene_root.get_node_or_null(NodePath(p))
+    if n != null:
+        return n
+    # Instanced root is e.g. MainRoot — path "MainRoot" is the root itself, not a child
+    if p == str(scene_root.name):
+        return scene_root
+    return null
 
 
 func _value_to_mcp_json(v: Variant) -> Variant:
@@ -1242,9 +1248,9 @@ func _value_to_mcp_json(v: Variant) -> Variant:
         TYPE_TRANSFORM3D:
             return {"_t": "Transform3D", "basis": {"x": _value_to_mcp_json(v.basis.x), "y": _value_to_mcp_json(v.basis.y), "z": _value_to_mcp_json(v.basis.z)}, "origin": _value_to_mcp_json(v.origin)}
     if v is Resource:
-        var rp := v.resource_path
-        if rp != "":
-            return {"_t": "Resource", "path": rp}
+        var res_path: String = (v as Resource).resource_path
+        if res_path != "":
+            return {"_t": "Resource", "path": res_path}
     return str(v)
 
 
@@ -1303,19 +1309,23 @@ func get_node_properties_op(params: Dictionary) -> void:
     if scene_path.is_empty() or node_path.is_empty():
         printerr("[ERROR] scene_path and node_path are required")
         quit(1)
+        return
     if not ResourceLoader.exists(scene_path):
         printerr("[ERROR] Scene not found: " + scene_path)
         quit(1)
+        return
     var packed := load(scene_path) as PackedScene
     if packed == null:
         printerr("[ERROR] Failed to load PackedScene: " + scene_path)
         quit(1)
-    var scene_root := packed.instantiate()
+        return
+    var scene_root: Node = packed.instantiate()
     var node := _resolve_scene_node(scene_root, node_path)
     if node == null:
         printerr("[ERROR] Node not found: " + node_path)
         scene_root.free()
         quit(1)
+        return
     var filter: Array = []
     if params.has("property_names") and params["property_names"] is Array:
         filter = params["property_names"]
@@ -1343,23 +1353,28 @@ func set_node_properties_op(params: Dictionary) -> void:
     if not params.has("properties") or typeof(params["properties"]) != TYPE_DICTIONARY:
         printerr("[ERROR] properties object is required")
         quit(1)
+        return
     if scene_path.is_empty() or node_path.is_empty():
         printerr("[ERROR] scene_path and node_path are required")
         quit(1)
+        return
     var abs_path := ProjectSettings.globalize_path(scene_path)
     if not FileAccess.file_exists(abs_path):
         printerr("[ERROR] Scene file does not exist: " + abs_path)
         quit(1)
+        return
     var scene_res := load(scene_path)
     if scene_res == null:
         printerr("[ERROR] Failed to load scene: " + scene_path)
         quit(1)
-    var scene_root := scene_res.instantiate()
+        return
+    var scene_root: Node = scene_res.instantiate()
     var node := _resolve_scene_node(scene_root, node_path)
     if node == null:
         printerr("[ERROR] Node not found: " + node_path)
         scene_root.free()
         quit(1)
+        return
     var props: Dictionary = params["properties"]
     for k in props:
         var raw_v = props[k]
@@ -1377,10 +1392,12 @@ func set_node_properties_op(params: Dictionary) -> void:
     if pack_result != OK:
         printerr("[ERROR] Failed to pack scene")
         quit(1)
+        return
     var save_err := ResourceSaver.save(packed_scene, abs_path)
     if save_err != OK:
         printerr("[ERROR] Failed to save scene: " + str(save_err))
         quit(1)
+        return
     _print_json_result({"ok": true, "scene_path": scene_path, "node_path": node_path, "saved": true})
 
 
@@ -1401,14 +1418,17 @@ func list_scene_nodes_op(params: Dictionary) -> void:
     if scene_path.is_empty():
         printerr("[ERROR] scene_path is required")
         quit(1)
+        return
     if not ResourceLoader.exists(scene_path):
         printerr("[ERROR] Scene not found: " + scene_path)
         quit(1)
+        return
     var packed := load(scene_path) as PackedScene
     if packed == null:
         printerr("[ERROR] Failed to load PackedScene: " + scene_path)
         quit(1)
-    var scene_root := packed.instantiate()
+        return
+    var scene_root: Node = packed.instantiate()
     var acc: Array = []
     _collect_node_rows(scene_root, "", 0, max_depth, acc)
     scene_root.free()

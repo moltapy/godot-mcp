@@ -102,6 +102,14 @@ These run via the bundled `godot_operations.gd` (same as upstream scene ops). Th
 
 Upstream: [Coding-Solo/godot-mcp](https://github.com/Coding-Solo/godot-mcp). This fork: [moltapy/godot-mcp](https://github.com/moltapy/godot-mcp).
 
+**Smoke test** (after `npm run build`, needs `GODOT_PATH` or default Godot path):
+
+```bash
+npm run test:headless
+```
+
+Uses `test/fixtures/minimal_godot_project` only. Testing against a **full game project** from the shell can look “stuck” because Autoloads and startup systems may run for a long time — use the minimal fixture or call tools from MCP the same way the server does (`execFile` argv array, valid JSON).
+
 ## Requirements
 
 - [Godot Engine](https://godotengine.org/download) installed on your system
