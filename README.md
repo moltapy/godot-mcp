@@ -78,6 +78,30 @@ Godot MCP enables AI agents to launch the Godot editor, run projects, capture de
   - Get UID for specific files
   - Update UID references by resaving resources
 
+### moltapy fork: node tools (headless)
+
+These run via the bundled `godot_operations.gd` (same as upstream scene ops). They read/write **saved** `.tscn` on disk (not the unsaved editor buffer).
+
+- **`get_node_properties`**: `projectPath`, `scenePath`, `nodePath` — optional `propertyNames[]`. Returns stored properties (`PROPERTY_USAGE_STORAGE`) as JSON; `Vector*` / `Color` / `Transform*` as structured objects; resources as `{ "_t": "Resource", "path": "res://..." }`.
+- **`set_node_properties`**: `projectPath`, `scenePath`, `nodePath`, `properties` — same value shapes; plain `res://...` strings load as resources.
+- **`list_scene_nodes`**: `projectPath`, `scenePath` — optional `maxDepth` (default 32). Flat list of `{ path, name, type }` from scene root.
+
+**Cursor MCP example** (use your clone after `npm run build`):
+
+```json
+{
+  "mcpServers": {
+    "godot": {
+      "command": "node",
+      "args": ["D:/path/to/godot-mcp/build/index.js"],
+      "env": { "GODOT_PATH": "D:/Godot_v4.x/Godot.exe", "DEBUG": "true" }
+    }
+  }
+}
+```
+
+Upstream: [Coding-Solo/godot-mcp](https://github.com/Coding-Solo/godot-mcp). This fork: [moltapy/godot-mcp](https://github.com/moltapy/godot-mcp).
+
 ## Requirements
 
 - [Godot Engine](https://godotengine.org/download) installed on your system

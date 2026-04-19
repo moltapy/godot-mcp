@@ -71,6 +71,12 @@ func _init():
             get_uid(params)
         "resave_resources":
             resave_resources(params)
+        "get_node_properties":
+            get_node_properties_op(params)
+        "set_node_properties":
+            set_node_properties_op(params)
+        "list_scene_nodes":
+            list_scene_nodes_op(params)
         _:
             log_error("Unknown operation: " + operation)
             quit(1)
@@ -1184,3 +1190,226 @@ func save_scene(params):
             printerr("Failed to save scene: " + str(error))
     else:
         printerr("Failed to pack scene: " + str(result))
+
+
+# --- Node property tools (moltapy fork) ------------------------------------
+
+
+func _normalize_scene_path(p: String) -> String:
+    var full := p
+    if not full.begins_with("res://"):
+        full = "res://" + full
+    return full
+
+
+func _resolve_scene_node(scene_root: Node, node_path_param: String) -> Node:
+    var p := node_path_param.strip_edges()
+    if p.begins_with("root/"):
+        p = p.substr(5)
+    if p.is_empty() or p == "root":
+        return scene_root
+    return scene_root.get_node_or_null(NodePath(p))
+
+
+func _value_to_mcp_json(v: Variant) -> Variant:
+    if v == null:
+        return null
+    match typeof(v):
+        TYPE_BOOL, TYPE_INT, TYPE_FLOAT:
+            return v
+        TYPE_STRING:
+            return v
+        TYPE_STRING_NAME:
+            return String(v)
+        TYPE_NODE_PATH:
+            return str(v)
+        TYPE_VECTOR2:
+            return {"_t": "Vector2", "x": v.x, "y": v.y}
+        TYPE_VECTOR2I:
+            return {"_t": "Vector2i", "x": v.x, "y": v.y}
+        TYPE_VECTOR3:
+            return {"_t": "Vector3", "x": v.x, "y": v.y, "z": v.z}
+        TYPE_VECTOR3I:
+            return {"_t": "Vector3i", "x": v.x, "y": v.y, "z": v.z}
+        TYPE_VECTOR4:
+            return {"_t": "Vector4", "x": v.x, "y": v.y, "z": v.z, "w": v.w}
+        TYPE_COLOR:
+            return {"_t": "Color", "r": v.r, "g": v.g, "b": v.b, "a": v.a}
+        TYPE_RECT2:
+            return {"_t": "Rect2", "position": _value_to_mcp_json(v.position), "size": _value_to_mcp_json(v.size)}
+        TYPE_TRANSFORM2D:
+            return {"_t": "Transform2D", "x": _value_to_mcp_json(v.x), "y": _value_to_mcp_json(v.y), "origin": _value_to_mcp_json(v.origin)}
+        TYPE_TRANSFORM3D:
+            return {"_t": "Transform3D", "basis": {"x": _value_to_mcp_json(v.basis.x), "y": _value_to_mcp_json(v.basis.y), "z": _value_to_mcp_json(v.basis.z)}, "origin": _value_to_mcp_json(v.origin)}
+    if v is Resource:
+        var rp := v.resource_path
+        if rp != "":
+            return {"_t": "Resource", "path": rp}
+    return str(v)
+
+
+func _json_value_to_variant(v: Variant) -> Variant:
+    if typeof(v) != TYPE_DICTIONARY:
+        if typeof(v) == TYPE_STRING:
+            var s := v as String
+            if s.begins_with("res://"):
+                var loaded = load(s)
+                if loaded:
+                    return loaded
+        return v
+    var d: Dictionary = v
+    if not d.has("_t"):
+        return v
+    match d["_t"]:
+        "Vector2":
+            return Vector2(float(d["x"]), float(d["y"]))
+        "Vector2i":
+            return Vector2i(int(d["x"]), int(d["y"]))
+        "Vector3":
+            return Vector3(float(d["x"]), float(d["y"]), float(d["z"]))
+        "Vector3i":
+            return Vector3i(int(d["x"]), int(d["y"]), int(d["z"]))
+        "Vector4":
+            return Vector4(float(d["x"]), float(d["y"]), float(d["z"]), float(d["w"]))
+        "Color":
+            return Color(float(d["r"]), float(d["g"]), float(d["b"]), float(d.get("a", 1.0)))
+        "Resource":
+            return load(d["path"])
+        "Rect2":
+            return Rect2(_json_value_to_variant(d["position"]), _json_value_to_variant(d["size"]))
+        "Transform2D":
+            var t2 := Transform2D()
+            t2.x = _json_value_to_variant(d["x"])
+            t2.y = _json_value_to_variant(d["y"])
+            t2.origin = _json_value_to_variant(d["origin"])
+            return t2
+        "Transform3D":
+            var bdata: Dictionary = d["basis"]
+            var bx = _json_value_to_variant(bdata["x"])
+            var by = _json_value_to_variant(bdata["y"])
+            var bz = _json_value_to_variant(bdata["z"])
+            return Transform3D(bx, by, bz, _json_value_to_variant(d["origin"]))
+    return v
+
+
+func _print_json_result(data: Dictionary) -> void:
+    var js := JSON.stringify(data)
+    print("GODOT_MCP_JSON_RESULT:" + js)
+
+
+func get_node_properties_op(params: Dictionary) -> void:
+    var scene_path := _normalize_scene_path(params.get("scene_path", ""))
+    var node_path := str(params.get("node_path", ""))
+    if scene_path.is_empty() or node_path.is_empty():
+        printerr("[ERROR] scene_path and node_path are required")
+        quit(1)
+    if not ResourceLoader.exists(scene_path):
+        printerr("[ERROR] Scene not found: " + scene_path)
+        quit(1)
+    var packed := load(scene_path) as PackedScene
+    if packed == null:
+        printerr("[ERROR] Failed to load PackedScene: " + scene_path)
+        quit(1)
+    var scene_root := packed.instantiate()
+    var node := _resolve_scene_node(scene_root, node_path)
+    if node == null:
+        printerr("[ERROR] Node not found: " + node_path)
+        scene_root.free()
+        quit(1)
+    var filter: Array = []
+    if params.has("property_names") and params["property_names"] is Array:
+        filter = params["property_names"]
+    var use_filter := filter.size() > 0
+    var out_props := {}
+    var node_class := node.get_class()
+    for prop in node.get_property_list():
+        var pname: String = prop["name"]
+        if use_filter and not pname in filter:
+            continue
+        var usage := int(prop["usage"])
+        if (usage & PROPERTY_USAGE_STORAGE) == 0:
+            continue
+        if pname.begins_with("__"):
+            continue
+        var val = node.get(pname)
+        out_props[pname] = _value_to_mcp_json(val)
+    scene_root.free()
+    _print_json_result({"ok": true, "scene_path": scene_path, "node_path": node_path, "class": node_class, "properties": out_props})
+
+
+func set_node_properties_op(params: Dictionary) -> void:
+    var scene_path := _normalize_scene_path(params.get("scene_path", ""))
+    var node_path := str(params.get("node_path", ""))
+    if not params.has("properties") or typeof(params["properties"]) != TYPE_DICTIONARY:
+        printerr("[ERROR] properties object is required")
+        quit(1)
+    if scene_path.is_empty() or node_path.is_empty():
+        printerr("[ERROR] scene_path and node_path are required")
+        quit(1)
+    var abs_path := ProjectSettings.globalize_path(scene_path)
+    if not FileAccess.file_exists(abs_path):
+        printerr("[ERROR] Scene file does not exist: " + abs_path)
+        quit(1)
+    var scene_res := load(scene_path)
+    if scene_res == null:
+        printerr("[ERROR] Failed to load scene: " + scene_path)
+        quit(1)
+    var scene_root := scene_res.instantiate()
+    var node := _resolve_scene_node(scene_root, node_path)
+    if node == null:
+        printerr("[ERROR] Node not found: " + node_path)
+        scene_root.free()
+        quit(1)
+    var props: Dictionary = params["properties"]
+    for k in props:
+        var raw_v = props[k]
+        var gv: Variant = raw_v
+        if typeof(raw_v) == TYPE_STRING:
+            var s := raw_v as String
+            if s.begins_with("res://"):
+                gv = load(s)
+        else:
+            gv = _json_value_to_variant(raw_v)
+        node.set(k, gv)
+    var packed_scene := PackedScene.new()
+    var pack_result := packed_scene.pack(scene_root)
+    scene_root.free()
+    if pack_result != OK:
+        printerr("[ERROR] Failed to pack scene")
+        quit(1)
+    var save_err := ResourceSaver.save(packed_scene, abs_path)
+    if save_err != OK:
+        printerr("[ERROR] Failed to save scene: " + str(save_err))
+        quit(1)
+    _print_json_result({"ok": true, "scene_path": scene_path, "node_path": node_path, "saved": true})
+
+
+func _collect_node_rows(n: Node, path_prefix: String, depth: int, max_depth: int, acc: Array) -> void:
+    var rel := path_prefix + str(n.name)
+    acc.append({"path": rel, "name": str(n.name), "type": n.get_class()})
+    if depth >= max_depth:
+        return
+    for c in n.get_children():
+        _collect_node_rows(c, rel + "/", depth + 1, max_depth, acc)
+
+
+func list_scene_nodes_op(params: Dictionary) -> void:
+    var scene_path := _normalize_scene_path(params.get("scene_path", ""))
+    var max_depth := int(params.get("max_depth", 32))
+    if max_depth < 1:
+        max_depth = 32
+    if scene_path.is_empty():
+        printerr("[ERROR] scene_path is required")
+        quit(1)
+    if not ResourceLoader.exists(scene_path):
+        printerr("[ERROR] Scene not found: " + scene_path)
+        quit(1)
+    var packed := load(scene_path) as PackedScene
+    if packed == null:
+        printerr("[ERROR] Failed to load PackedScene: " + scene_path)
+        quit(1)
+    var scene_root := packed.instantiate()
+    var acc: Array = []
+    _collect_node_rows(scene_root, "", 0, max_depth, acc)
+    scene_root.free()
+    _print_json_result({"ok": true, "scene_path": scene_path, "nodes": acc})

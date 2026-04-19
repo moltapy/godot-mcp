@@ -89,6 +89,8 @@ class GodotServer {
     'directory': 'directory',
     'recursive': 'recursive',
     'scene': 'scene',
+    'property_names': 'propertyNames',
+    'max_depth': 'maxDepth',
   };
 
   /**
@@ -923,6 +925,62 @@ class GodotServer {
             required: ['projectPath'],
           },
         },
+        {
+          name: 'get_node_properties',
+          description:
+            'Read stored properties of a node in a scene (headless). Returns JSON with property names and values (Vectors/Colors as structured objects, Resources as { _t, path }).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: { type: 'string', description: 'Path to the Godot project directory' },
+              scenePath: { type: 'string', description: 'Scene path relative to project (e.g. scenes/Main.tscn)' },
+              nodePath: {
+                type: 'string',
+                description: 'Node path from scene root (e.g. WorldMap/Terrain3D or root/Player)',
+              },
+              propertyNames: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Optional: only fetch these property names',
+              },
+            },
+            required: ['projectPath', 'scenePath', 'nodePath'],
+          },
+        },
+        {
+          name: 'set_node_properties',
+          description:
+            'Set properties on an existing node and save the scene. Use same value shapes as get_node_properties; strings starting with res:// load as resources.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: { type: 'string', description: 'Path to the Godot project directory' },
+              scenePath: { type: 'string', description: 'Scene path relative to project' },
+              nodePath: { type: 'string', description: 'Node path from scene root' },
+              properties: {
+                type: 'object',
+                description: 'Map of property name to value',
+              },
+            },
+            required: ['projectPath', 'scenePath', 'nodePath', 'properties'],
+          },
+        },
+        {
+          name: 'list_scene_nodes',
+          description: 'List all nodes in a scene with path (from root) and type, up to maxDepth levels deep.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: { type: 'string', description: 'Path to the Godot project directory' },
+              scenePath: { type: 'string', description: 'Scene path relative to project' },
+              maxDepth: {
+                type: 'number',
+                description: 'Max recursion depth (default 32)',
+              },
+            },
+            required: ['projectPath', 'scenePath'],
+          },
+        },
       ],
     }));
 
@@ -958,6 +1016,12 @@ class GodotServer {
           return await this.handleGetUid(request.params.arguments);
         case 'update_project_uids':
           return await this.handleUpdateProjectUids(request.params.arguments);
+        case 'get_node_properties':
+          return await this.handleGetNodeProperties(request.params.arguments);
+        case 'set_node_properties':
+          return await this.handleSetNodeProperties(request.params.arguments);
+        case 'list_scene_nodes':
+          return await this.handleListSceneNodes(request.params.arguments);
         default:
           throw new McpError(
             ErrorCode.MethodNotFound,
@@ -965,6 +1029,27 @@ class GodotServer {
           );
       }
     });
+  }
+
+  /**
+   * Parse GODOT_MCP_JSON_RESULT line from godot_operations.gd stdout
+   */
+  private parseGodotMcpJsonResult(stdout: string): Record<string, unknown> | null {
+    const lines = stdout.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      const prefix = 'GODOT_MCP_JSON_RESULT:';
+      if (line.includes(prefix)) {
+        const idx = line.indexOf(prefix);
+        const jsonPart = line.slice(idx + prefix.length).trim();
+        try {
+          return JSON.parse(jsonPart) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -2165,6 +2250,115 @@ class GodotServer {
           'Verify the project path is accessible',
         ]
       );
+    }
+  }
+
+  private async handleGetNodeProperties(args: any) {
+    args = this.normalizeParameters(args);
+    if (!args.projectPath || !args.scenePath || !args.nodePath) {
+      return this.createErrorResponse('Missing projectPath, scenePath, or nodePath', [
+        'Provide all three parameters',
+      ]);
+    }
+    if (!this.validatePath(args.projectPath) || !this.validatePath(args.scenePath)) {
+      return this.createErrorResponse('Invalid path', []);
+    }
+    const projectFile = join(args.projectPath, 'project.godot');
+    if (!existsSync(projectFile)) {
+      return this.createErrorResponse(`Not a valid Godot project: ${args.projectPath}`, []);
+    }
+    try {
+      if (!this.godotPath) await this.detectGodotPath();
+      if (!this.godotPath) {
+        return this.createErrorResponse('Could not find Godot executable', ['Set GODOT_PATH']);
+      }
+      const params: OperationParams = {
+        scenePath: args.scenePath,
+        nodePath: args.nodePath,
+      };
+      if (args.propertyNames && Array.isArray(args.propertyNames)) {
+        params.propertyNames = args.propertyNames;
+      }
+      const { stdout, stderr } = await this.executeOperation('get_node_properties', params, args.projectPath);
+      if (stderr && stderr.includes('[ERROR]')) {
+        return this.createErrorResponse(stderr, ['Check scenePath and nodePath (from scene root, optional root/ prefix)']);
+      }
+      const parsed = this.parseGodotMcpJsonResult(stdout);
+      if (parsed) {
+        return { content: [{ type: 'text', text: JSON.stringify(parsed, null, 2) }] };
+      }
+      return this.createErrorResponse(`Unexpected output:\n${stdout}\n${stderr}`, []);
+    } catch (error: any) {
+      return this.createErrorResponse(error?.message || 'Unknown error', []);
+    }
+  }
+
+  private async handleSetNodeProperties(args: any) {
+    args = this.normalizeParameters(args);
+    if (!args.projectPath || !args.scenePath || !args.nodePath || !args.properties) {
+      return this.createErrorResponse('Missing projectPath, scenePath, nodePath, or properties', []);
+    }
+    if (!this.validatePath(args.projectPath) || !this.validatePath(args.scenePath)) {
+      return this.createErrorResponse('Invalid path', []);
+    }
+    const projectFile = join(args.projectPath, 'project.godot');
+    if (!existsSync(projectFile)) {
+      return this.createErrorResponse(`Not a valid Godot project: ${args.projectPath}`, []);
+    }
+    try {
+      if (!this.godotPath) await this.detectGodotPath();
+      if (!this.godotPath) {
+        return this.createErrorResponse('Could not find Godot executable', ['Set GODOT_PATH']);
+      }
+      const params: OperationParams = {
+        scenePath: args.scenePath,
+        nodePath: args.nodePath,
+        properties: args.properties,
+      };
+      const { stdout, stderr } = await this.executeOperation('set_node_properties', params, args.projectPath);
+      if (stderr && stderr.includes('[ERROR]')) {
+        return this.createErrorResponse(stderr, ['Verify property names and value types']);
+      }
+      const parsed = this.parseGodotMcpJsonResult(stdout);
+      if (parsed) {
+        return { content: [{ type: 'text', text: JSON.stringify(parsed, null, 2) }] };
+      }
+      return this.createErrorResponse(`Unexpected output:\n${stdout}\n${stderr}`, []);
+    } catch (error: any) {
+      return this.createErrorResponse(error?.message || 'Unknown error', []);
+    }
+  }
+
+  private async handleListSceneNodes(args: any) {
+    args = this.normalizeParameters(args);
+    if (!args.projectPath || !args.scenePath) {
+      return this.createErrorResponse('Missing projectPath or scenePath', []);
+    }
+    if (!this.validatePath(args.projectPath) || !this.validatePath(args.scenePath)) {
+      return this.createErrorResponse('Invalid path', []);
+    }
+    const projectFile = join(args.projectPath, 'project.godot');
+    if (!existsSync(projectFile)) {
+      return this.createErrorResponse(`Not a valid Godot project: ${args.projectPath}`, []);
+    }
+    try {
+      if (!this.godotPath) await this.detectGodotPath();
+      if (!this.godotPath) {
+        return this.createErrorResponse('Could not find Godot executable', ['Set GODOT_PATH']);
+      }
+      const params: OperationParams = { scenePath: args.scenePath };
+      if (args.maxDepth !== undefined) params.maxDepth = args.maxDepth;
+      const { stdout, stderr } = await this.executeOperation('list_scene_nodes', params, args.projectPath);
+      if (stderr && stderr.includes('[ERROR]')) {
+        return this.createErrorResponse(stderr, []);
+      }
+      const parsed = this.parseGodotMcpJsonResult(stdout);
+      if (parsed) {
+        return { content: [{ type: 'text', text: JSON.stringify(parsed, null, 2) }] };
+      }
+      return this.createErrorResponse(`Unexpected output:\n${stdout}\n${stderr}`, []);
+    } catch (error: any) {
+      return this.createErrorResponse(error?.message || 'Unknown error', []);
     }
   }
 
